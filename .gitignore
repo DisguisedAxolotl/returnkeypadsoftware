@@ -1,0 +1,19 @@
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+
+# IDE / editor
+.vscode/
+
+# macOS / volume metadata
+.DS_Store
+.Trashes
+.Trash-1000
+.fseventsd
+.metadata_never_index
+
+# CircuitPython artifacts
+*.mpy
