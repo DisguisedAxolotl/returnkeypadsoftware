@@ -17,3 +17,5 @@ __pycache__/
 
 # CircuitPython artifacts
 *.mpy
+
+settings.toml
