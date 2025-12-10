@@ -1,11 +1,22 @@
 import board
 import keypad
 import rgb1602
+import allowlist_reader
+import time
+import adafruit_bus_device
+import adafruit_max1704x
+import alarm
+import digitalio
+import digitalio
 
 lcd = rgb1602.RGB1602(16, 2)  
 
+monitor = adafruit_max1704x.MAX17048(board.I2C())
+
 digits = []
 BLOCK = 1
+DAYAB = "A"
+DAYTYPE = "Norm"
 
 esp32s3_project_pins = {
     "NEOPIXEL": board.A0,      # GPIO18
@@ -21,6 +32,10 @@ esp32s3_project_pins = {
     "I2C_SDA": board.SDA,      # GPIO3
     "I2C_SCL": board.SCL,      # GPIO4
 }
+
+# Asterisk key is row 0 / col 1 in this matrix; diodes are row->column.
+ASTERISK_ROW_PIN = esp32s3_project_pins["ROW0"]
+ASTERISK_COL_PIN = esp32s3_project_pins["COL1"]
 
 
 # Key Number to Physical Key Mapping
@@ -43,6 +58,11 @@ KEY_LABELS = {
     16: "0",
     18: ".",
 }
+
+rows = [esp32s3_project_pins[f"ROW{i}"] for i in range(5)]
+cols = [esp32s3_project_pins[f"COL{i}"] for i in range(4)]
+
+keyboard = keypad.KeyMatrix(rows, cols)
 
 class Menu: 
     def __init__(self, title, items):
@@ -93,6 +113,13 @@ class Menu:
                     return
             elif event.key_number == 0:    # Num Lock as Back
                 return
+def bat_state():
+    lcd.clear()
+    lcd.write_text("Battery:", row=0)
+    percentage = f"{monitor.cell_percent:.1f} %"
+    lcd.write_text(percentage, row=1, clear_line=True)
+    time.sleep(2)
+    return(True)
 
 def upload_allowlist():
     return(True)
@@ -118,11 +145,14 @@ def set_block():
                     BLOCK = int(input_block)
                     return(True)
 
-
 def set_a_or_b_day(output):
+    global DAYAB
+    DAYAB = output
     return(True) 
 
 def set_day_type(output):
+    global DAYTYPE
+    DAYTYPE = output
     return(True)
 
 day_type_menu = Menu("Day Type?", [
@@ -136,23 +166,108 @@ a_or_b_day_menu = Menu("A or B Day?", [
     ("B Day", lambda: (set_a_or_b_day("B"), day_type_menu.activate(lcd, keyboard), True)[-1])
 ])
 
+# Low-power idle: screen off, minimal scan for * key (ROW->COL diodes).
+def go_deep_sleep():
+    global keyboard
+    lcd.clear()
+    try:
+        lcd.no_display()
+    except AttributeError:
+        pass
+    lcd.setRGB(0, 0, 0)
+
+    # Release the keypad so we can repurpose pins.
+    try:
+        keyboard.deinit()
+    except Exception:
+        pass
+
+    # Drive the asterisk column high; watch its row with a pulldown (col->row diodes).
+    col = digitalio.DigitalInOut(ASTERISK_COL_PIN)
+    col.switch_to_output(value=True)
+
+    row = digitalio.DigitalInOut(ASTERISK_ROW_PIN)
+    row.switch_to_input(pull=digitalio.Pull.DOWN)
+
+    try:
+        while not row.value:
+            time.sleep(0.02)  # ~20 ms poll
+    finally:
+        col.deinit()
+        row.deinit()
+
+    # Restore keypad and display state.
+    keyboard = keypad.KeyMatrix(rows, cols)
+    lcd.display()
+    lcd.setRGB(255, 255, 255)
+    lcd.clear()
+    return True
+
+
 settings = Menu("Settings", [
-    ("Set day", a_or_b_day_menu), 
+    ("Set day", a_or_b_day_menu),
     ("Set block", set_block),
-    ("Upload Allowlist", upload_allowlist)
+    ("Upload Allowlist", upload_allowlist),
+    ("Battery State", bat_state),
+    ("Power off", go_deep_sleep),
 ])
 
+def get_student_info(stid):
+    row = allowlist_reader.lookup_student(stid)
+    if row is None:
+        lcd.write_text("ID not found", row=0, clear_line=True)
+        lcd.setRGB(255, 0, 0)
+        time.sleep(1)
+        lcd.setRGB(255, 255, 255)
+        return
+
+    # Normalize row values and label
+    if isinstance(row, dict):
+        a_val = _to_int(row.get("A"))
+        b_val = _to_int(row.get("B"))
+        label = row.get("STUDENT_NAME") or row.get("STUDENT_PIN") or str(stid)
+    else:
+        print("Err fetch csv")
+        lcd.write_text("Data error", row=0, clear_line=True)
+        lcd.setRGB(255, 0, 0)
+        time.sleep(1)
+        lcd.setRGB(255, 255, 255)
+        lcd.write_text("", row=0, clear_line=True)
+        return
+    ok = False
+    if DAYAB == "A" and a_val is not None and a_val <= int(BLOCK):
+        ok = True
+    elif DAYAB == "B" and b_val is not None and b_val <= int(BLOCK):
+        ok = True
+
+    if ok:
+        lcd.write_text(f"{label}", row=0, clear_line=True)
+        lcd.write_text(f"OK - {DAYAB} DAY, P{BLOCK}", row=1, clear_line=True)
+        lcd.setRGB(0, 255, 0)
+    else:
+        lcd.write_text(label, row=0, clear_line=True)
+        lcd.write_text(f"Not Allowed-{DAYAB},P{BLOCK}", row=1, clear_line=True)
+        lcd.setRGB(255, 0, 0)
+    time.sleep(2)
+    lcd.setRGB(255, 255, 255)
+    lcd.write_text("", row=0, clear_line=True)
+    lcd.write_text("", row=1, clear_line=True)
 
 
+def _to_int(val):
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
 
-
-rows = [esp32s3_project_pins[f"ROW{i}"] for i in range(5)]
-cols = [esp32s3_project_pins[f"COL{i}"] for i in range(4)]
-
-keyboard = keypad.KeyMatrix(rows, cols)
+lcd.write_text("Booting...", row=0, clear_line=True)
+time.sleep(.5)
+lcd.clear()
 
 pin_digits = []
 input_prefix = "Student ID:"
+lcd.write_text(input_prefix, row=0, clear_line=True)
+lcd.write_text(f"{DAYAB} Day, Block{BLOCK}", row=1, clear_line=True)
 while True:
     event = keyboard.events.get()
     if event: 
@@ -164,9 +279,14 @@ while True:
                     lcd.write_text((input_prefix + "".join(pin_digits)), row=0, clear_line=True)
             elif key == "Enter":
                 if len(pin_digits) == 5:
+                    student_id = "".join(pin_digits)
                     lcd.clear()
+                    get_student_info(student_id)
                     pin_digits = []
+                    lcd.clear()
                     lcd.write_text(input_prefix, row=0, clear_line=True)
+                    lcd.write_text(f"{DAYAB} Day, Block {BLOCK}", row=1, clear_line=True)
+
             elif key == "Num Lock":
                 pin_digits.pop() if pin_digits else None
                 lcd.write_text((input_prefix + "".join(pin_digits)), row=0, clear_line=True)
@@ -174,3 +294,5 @@ while True:
                 settings.activate(lcd, keyboard)
                 pin_digits = []
                 lcd.clear()
+                lcd.write_text(input_prefix, row=0, clear_line=True)
+                lcd.write_text(f"{DAYAB} Day, Block {BLOCK}", row=1, clear_line=True)

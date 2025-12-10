@@ -65,8 +65,16 @@ LCD_5x8DOTS = 0x00
 
 
 def _default_i2c() -> busio.I2C:
-    """Create an I2C instance at 400kHz using the board default pins."""
-    return busio.I2C(board.SCL, board.SDA, frequency=400_000)
+    """Get a shared I2C instance at 400kHz using the board default pins.
+
+    On CircuitPython, ``board.STEMMA_I2C()`` caches and reuses the bus so we
+    avoid ``ValueError: SCL in use`` on reloads.
+    """
+
+    try:
+        return board.STEMMA_I2C()
+    except AttributeError:
+        return busio.I2C(board.SCL, board.SDA, frequency=400_000)
 
 
 class RGB1602:
