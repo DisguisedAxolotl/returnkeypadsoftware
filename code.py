@@ -3,20 +3,21 @@ import keypad
 import rgb1602
 import allowlist_reader
 import time
-import adafruit_bus_device
+#import adafruit_bus_device
 import adafruit_max1704x
-import alarm
-import digitalio
+#import alarm
 import digitalio
 
 lcd = rgb1602.RGB1602(16, 2)  
 
 monitor = adafruit_max1704x.MAX17048(board.I2C())
 
+
 digits = []
 BLOCK = 1
 DAYAB = "A"
 DAYTYPE = "Norm"
+BRIGHTNESS = 1
 
 esp32s3_project_pins = {
     "NEOPIXEL": board.A0,      # GPIO18
@@ -114,14 +115,20 @@ class Menu:
             elif event.key_number == 0:    # Num Lock as Back
                 return
 def bat_state():
+    #monitor.wake()
     lcd.clear()
     lcd.write_text("Battery:", row=0)
     percentage = f"{monitor.cell_percent:.1f} %"
     lcd.write_text(percentage, row=1, clear_line=True)
+    #monitor.hibernate()
     time.sleep(2)
     return(True)
 
+
 def upload_allowlist():
+    return(True)
+
+def brightness_set():
     return(True)
 
 def set_block():
@@ -166,42 +173,13 @@ a_or_b_day_menu = Menu("A or B Day?", [
     ("B Day", lambda: (set_a_or_b_day("B"), day_type_menu.activate(lcd, keyboard), True)[-1])
 ])
 
-# Low-power idle: screen off, minimal scan for * key (ROW->COL diodes).
+
 def go_deep_sleep():
-    global keyboard
+    monitor.hibernate()
     lcd.clear()
-    try:
-        lcd.no_display()
-    except AttributeError:
-        pass
-    lcd.setRGB(0, 0, 0)
+    lcd.setRGB(0,0,0)
+    raise SystemExit
 
-    # Release the keypad so we can repurpose pins.
-    try:
-        keyboard.deinit()
-    except Exception:
-        pass
-
-    # Drive the asterisk column high; watch its row with a pulldown (col->row diodes).
-    col = digitalio.DigitalInOut(ASTERISK_COL_PIN)
-    col.switch_to_output(value=True)
-
-    row = digitalio.DigitalInOut(ASTERISK_ROW_PIN)
-    row.switch_to_input(pull=digitalio.Pull.DOWN)
-
-    try:
-        while not row.value:
-            time.sleep(0.02)  # ~20 ms poll
-    finally:
-        col.deinit()
-        row.deinit()
-
-    # Restore keypad and display state.
-    keyboard = keypad.KeyMatrix(rows, cols)
-    lcd.display()
-    lcd.setRGB(255, 255, 255)
-    lcd.clear()
-    return True
 
 
 settings = Menu("Settings", [
@@ -218,7 +196,7 @@ def get_student_info(stid):
         lcd.write_text("ID not found", row=0, clear_line=True)
         lcd.setRGB(255, 0, 0)
         time.sleep(1)
-        lcd.setRGB(255, 255, 255)
+        lcd.setRGB(255*BRIGHTNESS, 255*BRIGHTNESS, 255*BRIGHTNESS)
         return
 
     # Normalize row values and label
@@ -231,7 +209,7 @@ def get_student_info(stid):
         lcd.write_text("Data error", row=0, clear_line=True)
         lcd.setRGB(255, 0, 0)
         time.sleep(1)
-        lcd.setRGB(255, 255, 255)
+        lcd.setRGB(255*BRIGHTNESS, 255*BRIGHTNESS, 255*BRIGHTNESS)
         lcd.write_text("", row=0, clear_line=True)
         return
     ok = False
@@ -249,7 +227,7 @@ def get_student_info(stid):
         lcd.write_text(f"Not Allowed-{DAYAB},P{BLOCK}", row=1, clear_line=True)
         lcd.setRGB(255, 0, 0)
     time.sleep(2)
-    lcd.setRGB(255, 255, 255)
+    lcd.setRGB(255*BRIGHTNESS, 255*BRIGHTNESS, 255*BRIGHTNESS)
     lcd.write_text("", row=0, clear_line=True)
     lcd.write_text("", row=1, clear_line=True)
 
@@ -269,7 +247,19 @@ input_prefix = "Student ID:"
 lcd.write_text(input_prefix, row=0, clear_line=True)
 lcd.write_text(f"{DAYAB} Day, Block{BLOCK}", row=1, clear_line=True)
 while True:
+    if monitor.active_alert:
+        if monitor.SOC_low_alert:
+            lcd.clear()
+            lcd.write_text("LOW BATTERY", row=0, clear_line=True)
+            lcd.setRGB(255, 0, 0)
+            time.sleep(2)
+            lcd.setRGB(0,0,0)
+            lcd.clear()
+
     event = keyboard.events.get()
+    if not event:
+        time.sleep(0.05)  # brief idle to avoid a tight polling loop
+        continue
     if event: 
         if event.pressed:
             key = KEY_LABELS.get(event.key_number, None)
